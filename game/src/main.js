@@ -1,134 +1,160 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
-//
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
-import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Bloomkeeper — the game loop and the state machine.
+// Title -> playing -> (upgrade -> playing) ... -> win / game over -> restart.
+// This file wires the input, world, audio and renderer together and owns
+// the moments between waves; everything else lives in its own module.
+
+import { GardenAudio } from './audio.js';
+import { UPGRADES, VIEW, WAVES } from './config.js';
+import { makeDraft } from './entities.js';
+import { Input } from './input.js';
+import { makeRandom } from './random.js';
+import { Renderer } from './render.js';
 import { stageShot } from './shots.js';
-
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = 0.25;
-
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
+import { World } from './world.js';
 
 const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
-const renderer = createRenderer(canvas);
+const ctx = canvas.getContext('2d');
+canvas.width = VIEW.width;
+canvas.height = VIEW.height;
 
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
+const params = new URLSearchParams(window.location.search);
+const shotName = params.get('shot');
+const seed = Number(params.get('seed') ?? '1') || 1;
+if (shotName) document.body.classList.add('shot');
+
+const rng = makeRandom(shotName ? seed * 7919 : (Date.now() % 2147483647) || 1);
+const audio = new GardenAudio();
+const input = new Input(canvas);
+const renderer = new Renderer();
+const world = new World(rng, audio);
+
+const ui = {
+  state: 'title',
+  time: 0,
+  bannerTimer: 0,
+  bannerText: '',
+  bannerSub: '',
+  choices: [],
+  cardRects: [],
+  mouse: input.mouse,
+  endTimer: 0,
+};
+
+let draft = makeDraft();
+
+function showBanner(text, sub) {
+  ui.bannerText = text;
+  ui.bannerSub = sub;
+  ui.bannerTimer = 2.2;
+}
+
+function startGame() {
+  world.reset();
+  draft = makeDraft();
+  ui.state = 'playing';
+  ui.endTimer = 0;
+  world.startNextWave();
+  showBanner('Wave 1', 'The moths come first. Hold the garden!');
+}
+
+function openUpgrade() {
+  const pool = [...UPGRADES];
+  ui.choices = [];
+  for (let i = 0; i < 3; i += 1) {
+    const index = Math.floor(rng.next() * pool.length);
+    ui.choices.push(pool.splice(index, 1)[0]);
+  }
+  ui.state = 'upgrade';
+}
+
+function chooseUpgrade(upgrade) {
+  upgrade.apply(draft);
+  // One-shot blessings land at once, then clear so they never re-apply.
+  if (draft.heartHeal > 0) {
+    world.heart.hp = Math.min(world.heart.maxHp, world.heart.hp + draft.heartHeal);
+    draft.heartHeal = 0;
+  }
+  if (draft.playerHeal > 0) {
+    world.player.hearts = Math.min(3, world.player.hearts + draft.playerHeal);
+    draft.playerHeal = 0;
+  }
+  audio.upgrade();
+  ui.state = 'playing';
+  world.startNextWave();
+  if (world.wave >= WAVES.length) {
+    showBanner(`Wave ${world.wave}`, 'The Hollow Husk comes for the Heart Flower!');
+  } else {
+    showBanner(`Wave ${world.wave}`, 'The blight grows bolder…');
   }
 }
 
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
-  }
-}
-
-function runShot(name) {
-  const scene = stageShot(name, world);
-  let painted = 0;
-  function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
-  }
-  requestAnimationFrame(paint);
-}
-
-function runGame() {
-  const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
-  let best = readBest();
-  let accumulator = 0;
-  let last = performance.now();
-
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
-  }
-
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
-
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
-    }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
-  }
-
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
-    }
-  }
-
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
-      return;
-    }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
-  }
-
-  function frame(now) {
-    requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
-        accumulator -= STEP;
+function handleUpgradePick() {
+  if (input.mouse.clicked) {
+    ui.cardRects.forEach((rect, index) => {
+      if (input.mouse.x >= rect.x && input.mouse.x <= rect.x + rect.width
+        && input.mouse.y >= rect.y && input.mouse.y <= rect.y + rect.height) {
+        chooseUpgrade(ui.choices[index]);
       }
+    });
+  }
+  for (let i = 0; i < 3; i += 1) {
+    if (input.justPressed(`Digit${i + 1}`)) chooseUpgrade(ui.choices[i]);
+  }
+}
+
+if (shotName) {
+  const staged = stageShot(world, shotName);
+  ui.state = staged.state;
+  if (staged.choices) ui.choices = staged.choices;
+}
+
+let lastTime = performance.now();
+
+function frame(now) {
+  let dt = Math.min(0.033, (now - lastTime) / 1000);
+  lastTime = now;
+  if (shotName) dt = 0.016; // staged scenes tick evenly, for steady pictures
+  ui.time += dt;
+  ui.bannerTimer = Math.max(0, ui.bannerTimer - dt);
+
+  if (input.justPressed('KeyM')) audio.setMuted(!audio.muted);
+  if (input.mouse.clicked || input.pressed.size > 0) audio.unlock();
+
+  if (ui.state === 'title') {
+    world.heart.pulse += dt * 2;
+    if (input.mouse.clicked || input.justPressed('Enter', 'Space')) startGame();
+  } else if (ui.state === 'playing') {
+    if (input.justPressed('KeyP', 'Escape')) {
+      ui.state = 'paused';
     } else {
-      accumulator = 0;
+      audio.update(dt);
+      const wasPhase = world.phase;
+      world.update(dt, input, draft);
+      if (world.outcome) {
+        ui.endTimer += dt;
+        if (ui.endTimer > 1.1) ui.state = world.outcome === 'win' ? 'win' : 'gameover';
+      } else if (wasPhase === 'fighting' && world.phase === 'cleared') {
+        // The wave is held: a breath, then the blessing choice.
+        ui.endTimer = -0.9;
+      } else if (world.phase === 'cleared' && ui.endTimer < 0) {
+        ui.endTimer += dt;
+        if (ui.endTimer >= 0) openUpgrade();
+      }
     }
-    renderer.draw(world.state, screen, best);
+  } else if (ui.state === 'paused') {
+    if (input.justPressed('KeyP', 'Escape')) ui.state = 'playing';
+  } else if (ui.state === 'upgrade') {
+    world.heart.pulse += dt * 2;
+    handleUpgradePick();
+  } else if (ui.state === 'win' || ui.state === 'gameover') {
+    world.updateParticles(dt);
+    world.heart.pulse += dt * 2;
+    if (input.justPressed('KeyR') || input.mouse.clicked) startGame();
   }
 
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    }
-  });
-
-  announce('Block Dodger. Press Space or click to start.');
+  renderer.draw(ctx, world, ui);
+  input.endFrame();
   requestAnimationFrame(frame);
 }
 
-if (shot) runShot(shot);
-else runGame();
+requestAnimationFrame(frame);

@@ -1,79 +1,88 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Bloomkeeper — staged scenes for the screenshots in shots.json.
+// A URL like ?shot=play&seed=1 arranges a real mid-game moment with the
+// game's own creatures and rules, so the pictures in screenshots/ are
+// honest renders of the game itself, identical every time they are taken.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { UPGRADES, VIEW } from './config.js';
+import { burst, makeBullet, makeEnemy, makeSunDrop } from './entities.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
+function place(world, kind, x, y) {
+  const enemy = makeEnemy(kind, x, y, world.rng);
+  world.enemies.push(enemy);
+  return enemy;
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
+export function stageShot(world, name) {
+  if (name === 'play') {
+    world.wave = 3;
+    world.phase = 'fighting';
+    world.score = 1840;
+    world.kills = 41;
+    world.combo = 9;
+    world.comboTimer = 2.2;
+    world.bestCombo = 14;
+    world.heart.hp = 72;
+    world.player.x = 430;
+    world.player.y = 540;
+    world.player.hearts = 2;
+    world.player.aimAngle = -0.5;
+    place(world, 'moth', 905, 295);
+    place(world, 'moth', 1015, 425);
+    place(world, 'moth', 845, 175);
+    place(world, 'beetle', 1085, 605);
+    place(world, 'beetle', 295, 235);
+    place(world, 'spore', 960, 530);
+    place(world, 'mite', 705, 305);
+    for (let i = 0; i < 5; i += 1) {
+      world.bullets.push(makeBullet(470 + i * 52, 515 - i * 26, -0.5, 1));
     }
+    world.drops.push(makeSunDrop(560, 380, world.rng));
+    world.drops.push(makeSunDrop(760, 620, world.rng));
+    world.spawnQueue = ['moth', 'beetle', 'moth'];
+    burst(world.particles, 905, 295, world.rng, '#8d7bff', 8, 130, 0.7, 4);
+    return { state: 'playing' };
   }
-  return best;
-}
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+  if (name === 'upgrade') {
+    world.wave = 2;
+    world.phase = 'cleared';
+    world.score = 1320;
+    world.kills = 26;
+    world.heart.hp = 64;
+    world.player.x = VIEW.width / 2 - 130;
+    world.player.y = VIEW.height / 2 + 200;
+    const choices = ['rapid', 'twin', 'heartsap'].map((id) => UPGRADES.find((upgrade) => upgrade.id === id));
+    return { state: 'upgrade', choices };
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+
+  if (name === 'win') {
+    world.wave = 8;
+    world.phase = 'cleared';
+    world.outcome = 'win';
+    world.score = 12480;
+    world.kills = 214;
+    world.bestCombo = 23;
+    world.heart.hp = 38;
+    burst(world.particles, world.heart.x, world.heart.y, world.rng, '#ffc94d', 40, 240, 1.2, 5);
+    burst(world.particles, world.heart.x, world.heart.y, world.rng, '#ff8fb2', 30, 200, 1.3, 5);
+    return { state: 'win' };
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+
+  if (name === 'gameover') {
+    world.wave = 5;
+    world.phase = 'fighting';
+    world.outcome = 'lose';
+    world.loseReason = 'The Heart Flower was eaten by the blight.';
+    world.score = 6930;
+    world.kills = 118;
+    world.bestCombo = 17;
+    world.heart.hp = 0;
+    place(world, 'beetle', 700, 380);
+    place(world, 'moth', 560, 300);
+    return { state: 'gameover' };
+  }
+
+  // 'title' and anything unknown: a fresh garden behind the title panel.
+  world.heart.hp = 100;
+  return { state: 'title' };
 }
