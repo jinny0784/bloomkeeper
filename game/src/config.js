@@ -61,9 +61,9 @@ export const WAVES = [
 ];
 
 export const ENEMIES = {
-  moth: { radius: 16, hp: 2, speed: 74, damage: 6, score: 40, touchDamage: 1 },
-  beetle: { radius: 22, hp: 6, speed: 44, damage: 10, score: 90, touchDamage: 1 },
-  spore: { radius: 26, hp: 9, speed: 34, damage: 14, score: 140, touchDamage: 1 },
+  moth: { radius: 16, hp: 2, speed: 74, damage: 4, score: 40, touchDamage: 1 },
+  beetle: { radius: 22, hp: 6, speed: 44, damage: 8, score: 90, touchDamage: 1 },
+  spore: { radius: 26, hp: 9, speed: 34, damage: 12, score: 140, touchDamage: 1 },
   mite: { radius: 11, hp: 1, speed: 108, damage: 3, score: 20, touchDamage: 1 },
   husk: { radius: 58, hp: 120, speed: 21, damage: 30, score: 2000, touchDamage: 1 },
 };

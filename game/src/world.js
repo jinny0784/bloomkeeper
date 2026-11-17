@@ -192,7 +192,7 @@ export class World {
       // Reaching the Heart Flower: it bites, then backs off a breath.
       const heartDist = Math.hypot(enemy.x - this.heart.x, enemy.y - this.heart.y);
       if (heartDist < enemy.radius + this.heart.radius - 8 && enemy.touchCooldown <= 0) {
-        enemy.touchCooldown = 0.9;
+        enemy.touchCooldown = 1.1;
         this.heart.hp -= enemy.damage;
         this.heart.hurtFlash = 1;
         this.shake = Math.min(9, this.shake + 4);
